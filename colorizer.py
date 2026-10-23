@@ -29,10 +29,10 @@ def download_file(filename, url):
         return filepath
         
     print(f"Downloading {filename}...")
-    response = requests.get(url, stream=True, timeout=60)
+    response = requests.get(url, stream=True, timeout=120)
     response.raise_for_status()
     
-    # Download in small 8KB chunks to avoid RAM spikes
+    # Download in small 8KB chunks to prevent RAM spikes on Render
     with open(filepath, "wb") as f:
         for chunk in response.iter_content(chunk_size=8192):
             if chunk:
@@ -43,12 +43,12 @@ def download_file(filename, url):
 
 def colorize_image(image_bytes):
     try:
-        # Step 1: Ensure files are downloaded
+        # Step 1: Ensure files are downloaded safely
         prototxt_path = download_file(*FILES["prototxt"])
         weights_path = download_file(*FILES["weights"])
         pts_path = download_file(*FILES["points"])
 
-        # Step 2: Load Model
+        # Step 2: Load Model into OpenCV
         net = cv2.dnn.readNetFromCaffe(prototxt_path, weights_path)
         pts = np.load(pts_path)
 
@@ -70,9 +70,9 @@ def colorize_image(image_bytes):
         if img is None:
             return None
 
-        # Step 4: Downscale image for colorization to save RAM
+        # Step 4: Downscale image if large to fit within Render free tier RAM (512MB)
         height, width = img.shape[:2]
-        max_dim = 600  # Prevents RAM overflow on large images
+        max_dim = 600
         if max(height, width) > max_dim:
             scale = max_dim / float(max(height, width))
             img = cv2.resize(img, (int(width * scale), int(height * scale)), interpolation=cv2.INTER_AREA)
@@ -94,7 +94,7 @@ def colorize_image(image_bytes):
         colorized = cv2.cvtColor(colorized, cv2.COLOR_LAB2BGR)
         colorized = np.clip(colorized * 255, 0, 255).astype("uint8")
 
-        # Clean up heavy variables
+        # Cleanup heavy variables
         del net, pts, lab, resized, L, ab
         gc.collect()
 
@@ -103,3 +103,4 @@ def colorize_image(image_bytes):
     except Exception as e:
         print(f"Colorization Error: {e}")
         return None
+
