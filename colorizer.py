@@ -11,18 +11,17 @@ MODEL_DIR.mkdir(exist_ok=True)
 FILES = {
     "prototxt": (
         "colorization_deploy_v2.prototxt",
-        "https://raw.githubusercontent.com/richzhang/"
-        "colorization/caffe/models/colorization_deploy_v2.prototxt",
+        "https://raw.githubusercontent.com/richzhang/colorization/caffe/models/colorization_deploy_v2.prototxt",
     ),
     "weights": (
         "colorization_release_v2.caffemodel",
-        "https://github.com/richzhang/colorization/raw/"
-        "master/caffe/models/colorization_release_v2.caffemodel",
+        "https://huggingface.co/prajjwal1/bert-tiny/resolve/main/colorization_release_v2.caffemodel" 
+        # Alternative direct mirror:
+        # "https://eecs.berkeley.edu/~rich.zhang/projects/colorization/data/colorization_release_v2.caffemodel"
     ),
     "points": (
         "pts_in_hull.npy",
-        "https://raw.githubusercontent.com/richzhang/"
-        "colorization/caffe/resources/pts_in_hull.npy",
+        "https://raw.githubusercontent.com/richzhang/colorization/caffe/resources/pts_in_hull.npy",
     ),
 }
 
