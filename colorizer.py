@@ -15,9 +15,7 @@ FILES = {
     ),
     "weights": (
         "colorization_release_v2.caffemodel",
-        "https://huggingface.co/prajjwal1/bert-tiny/resolve/main/colorization_release_v2.caffemodel" 
-        # Alternative direct mirror:
-        # "https://eecs.berkeley.edu/~rich.zhang/projects/colorization/data/colorization_release_v2.caffemodel"
+        "https://storage.openvinotoolkit.org/repositories/datumaro/models/colorization/colorization_release_v2.caffemodel",
     ),
     "points": (
         "pts_in_hull.npy",
