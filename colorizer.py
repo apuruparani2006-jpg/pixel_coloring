@@ -102,4 +102,3 @@ def colorize_image(image_bytes):
         # Display explicit technical error in Streamlit interface for quick debugging
         st.error(f"Detailed Processing Error: {str(e)}")
         return None
-
