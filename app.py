@@ -2,8 +2,8 @@ import os
 import streamlit as st
 from dotenv import load_dotenv
 
-# LangChain & LangGraph Imports
-from langchain_openai import ChatOpenAI
+# LangChain & LangGraph Imports for Google Gemini
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.tools import tool
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 from langgraph.graph import StateGraph, END
@@ -12,10 +12,10 @@ from typing import Annotated, TypedDict
 
 load_dotenv()
 
-st.set_page_config(page_title="Hardware-Agent AI Controller", page_icon="🚦", layout="wide")
+st.set_page_config(page_title="Hardware-Agent AI Controller (Gemini)", page_icon="🚦", layout="wide")
 
 st.title("🚦 Agentic AI Traffic Light & Verilog Controller")
-st.caption("Control physical Verilog state machines using autonomous AI agents powered by LangGraph.")
+st.caption("Control physical Verilog state machines using autonomous AI agents powered by Gemini & LangGraph.")
 
 # Initialize Hardware FSM State
 if "fsm_state" not in st.session_state:
@@ -132,10 +132,20 @@ def build_agent_graph(llm):
 
 # --- SIDEBAR & UI LAYOUT ---
 with st.sidebar:
-    st.header("⚙️ Agent Settings")
-    api_key = st.text_input("OpenAI API Key", type="password", value=os.getenv("OPENAI_API_KEY", ""))
+    st.header("⚙️ Gemini Configuration")
+    api_key = st.text_input(
+        "Google Gemini API Key",
+        type="password",
+        value=os.getenv("GEMINI_API_KEY", os.getenv("GOOGLE_API_KEY", ""))
+    )
     if api_key:
-        os.environ["OPENAI_API_KEY"] = api_key
+        os.environ["GOOGLE_API_KEY"] = api_key
+
+    selected_model = st.selectbox(
+        "Select Model",
+        ["gemini-1.5-flash", "gemini-1.5-pro"],
+        index=0
+    )
 
 col1, col2 = st.columns([1.2, 1])
 
@@ -150,18 +160,24 @@ with col1:
     user_input = st.chat_input("e.g. 'An emergency vehicle is approaching from North-South. Override the light!'")
 
     if user_input:
-        if not os.getenv("OPENAI_API_KEY"):
-            st.error("Please provide an OpenAI API Key in the sidebar.")
+        active_key = os.getenv("GOOGLE_API_KEY", api_key)
+        if not active_key:
+            st.error("Please enter a valid Google Gemini API key in the sidebar.")
             st.stop()
 
         st.session_state.messages.append(HumanMessage(content=user_input))
         st.chat_message("user").write(user_input)
 
-        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.1)
+        # Initialize Gemini LLM with the provided key
+        llm = ChatGoogleGenerativeAI(
+            model=selected_model,
+            google_api_key=active_key,
+            temperature=0.1
+        )
         graph = build_agent_graph(llm)
 
         with st.chat_message("assistant"):
-            status_container = st.status("🧠 Agent Evaluating Hardware Command...", expanded=True)
+            status_container = st.status("🧠 Gemini Evaluating Hardware Command...", expanded=True)
             inputs = {"messages": st.session_state.messages}
             final_res = ""
 
