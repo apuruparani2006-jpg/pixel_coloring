@@ -3,6 +3,7 @@ import gc
 import cv2
 import numpy as np
 import requests
+import streamlit as st
 
 MODELS_DIR = "models"
 FILES = {
@@ -21,58 +22,55 @@ FILES = {
 }
 
 def download_file(filename, url):
+    """Downloads Caffe model weights in 8KB chunks to avoid RAM spikes on Render free tier."""
     os.makedirs(MODELS_DIR, exist_ok=True)
     filepath = os.path.join(MODELS_DIR, filename)
     
-    # Check if already downloaded
     if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
         return filepath
         
-    print(f"Downloading {filename}...")
     response = requests.get(url, stream=True, timeout=120)
     response.raise_for_status()
     
-    # Download in small 8KB chunks to prevent RAM spikes on Render
     with open(filepath, "wb") as f:
         for chunk in response.iter_content(chunk_size=8192):
             if chunk:
                 f.write(chunk)
                 
-    print(f"Downloaded {filename} successfully.")
     return filepath
 
 def colorize_image(image_bytes):
     try:
-        # Step 1: Ensure files are downloaded safely
+        # Step 1: Ensure Caffe model files are present / downloaded dynamically
         prototxt_path = download_file(*FILES["prototxt"])
         weights_path = download_file(*FILES["weights"])
         pts_path = download_file(*FILES["points"])
 
-        # Step 2: Load Model into OpenCV
+        # Step 2: Load Caffe Model into OpenCV DNN
         net = cv2.dnn.readNetFromCaffe(prototxt_path, weights_path)
         pts = np.load(pts_path)
 
-        # Populate cluster centers
         class8 = net.getLayerId("class8_ab")
         conv8 = net.getLayerId("conv8_313_rh")
         pts = pts.transpose().reshape(2, 313, 1, 1)
         net.getLayer(class8).blobs = [pts.astype(np.float32)]
         net.getLayer(conv8).blobs = [np.full((1, 313), 2.606, dtype="float32")]
 
-        # Step 3: Decode input image
+        # Step 3: Decode raw byte input into OpenCV matrix
         np_arr = np.frombuffer(image_bytes, np.uint8)
         img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
         
-        # Free memory immediately
+        # Free byte array immediately to reduce memory footprint
         del np_arr
         gc.collect()
 
         if img is None:
+            st.error("Error: Could not decode uploaded image file into image matrix.")
             return None
 
-        # Step 4: Downscale image if large to fit within Render free tier RAM (512MB)
+        # Step 4: Downscale large images (max 500px) to prevent 512MB RAM overflow
         height, width = img.shape[:2]
-        max_dim = 600
+        max_dim = 500
         if max(height, width) > max_dim:
             scale = max_dim / float(max(height, width))
             img = cv2.resize(img, (int(width * scale), int(height * scale)), interpolation=cv2.INTER_AREA)
@@ -94,13 +92,14 @@ def colorize_image(image_bytes):
         colorized = cv2.cvtColor(colorized, cv2.COLOR_LAB2BGR)
         colorized = np.clip(colorized * 255, 0, 255).astype("uint8")
 
-        # Cleanup heavy variables
+        # Step 5: Clean up model objects from memory
         del net, pts, lab, resized, L, ab
         gc.collect()
 
         return colorized
 
     except Exception as e:
-        print(f"Colorization Error: {e}")
+        # Display explicit technical error in Streamlit interface for quick debugging
+        st.error(f"Detailed Processing Error: {str(e)}")
         return None
 
