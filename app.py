@@ -1,102 +1,203 @@
+import os
 import streamlit as st
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
+from dotenv import load_dotenv
 
-# Streamlit Page Setup
-st.set_page_config(page_title="Seven Segment Verilog Simulator", page_icon="💡", layout="wide")
+# LangChain & LangGraph Imports
+from langchain_openai import ChatOpenAI
+from langchain_core.tools import tool
+from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
+from langgraph.graph import StateGraph, END
+from langgraph.graph.message import add_messages
+from typing import Annotated, TypedDict
 
-st.title("💡 Seven-Segment Display Verilog Visualizer")
-st.write("Simulate and verify 4-bit Binary to 7-Segment HDL multiplexer logic in real time!")
+load_dotenv()
 
-col1, col2 = st.columns([1, 1])
+st.set_page_config(page_title="Hardware-Agent AI Controller", page_icon="🚦", layout="wide")
 
-# Look-Up Table mapping (0 = ON, 1 = OFF for Active-Low)
-segment_lut = {
-    0: "0000001", 1: "1001111", 2: "0010010", 3: "0000110",
-    4: "1001100", 5: "0100100", 6: "0100000", 7: "0001101",
-    8: "0000000", 9: "0000100", 10: "0001000", 11: "1100000",
-    12: "0110001", 13: "1000010", 14: "0110000", 15: "0111000"
-}
+st.title("🚦 Agentic AI Traffic Light & Verilog Controller")
+st.caption("Control physical Verilog state machines using autonomous AI agents powered by LangGraph.")
+
+# Initialize Hardware FSM State
+if "fsm_state" not in st.session_state:
+    st.session_state.fsm_state = 0  # 0: NS_GREEN, 1: NS_YELLOW, 2: EW_GREEN, 3: EW_YELLOW
+if "fsm_timer" not in st.session_state:
+    st.session_state.fsm_timer = 0
+if "em_ns" not in st.session_state:
+    st.session_state.em_ns = False
+if "em_ew" not in st.session_state:
+    st.session_state.em_ew = False
+if "log_history" not in st.session_state:
+    st.session_state.log_history = ["System initialized."]
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+STATE_NAMES = ["S_NS_GREEN (00)", "S_NS_YELLOW (01)", "S_EW_GREEN (10)", "S_EW_YELLOW (11)"]
+
+# --- HARDWARE TOOL DEFINITIONS FOR AI AGENT ---
+@tool
+def trigger_clock_steps(steps: int = 1) -> str:
+    """Steps the system clock by N cycles in the Verilog traffic light controller."""
+    for _ in range(steps):
+        if not st.session_state.em_ns and not st.session_state.em_ew:
+            st.session_state.fsm_timer += 1
+            if (st.session_state.fsm_state in [0, 2]) and st.session_state.fsm_timer >= 10:
+                st.session_state.fsm_state = (st.session_state.fsm_state + 1) % 4
+                st.session_state.fsm_timer = 0
+            elif (st.session_state.fsm_state in [1, 3]) and st.session_state.fsm_timer >= 3:
+                st.session_state.fsm_state = (st.session_state.fsm_state + 1) % 4
+                st.session_state.fsm_timer = 0
+    
+    current_state = STATE_NAMES[st.session_state.fsm_state]
+    msg = f"Clock advanced by {steps} steps. Current state: {current_state}, Timer: {st.session_state.fsm_timer}."
+    st.session_state.log_history.append(msg)
+    return msg
+
+@tool
+def trigger_emergency_override(direction: str) -> str:
+    """Triggers or clears emergency override. Input direction should be 'NS', 'EW', or 'CLEAR'."""
+    dir_upper = direction.upper()
+    if dir_upper == "NS":
+        st.session_state.em_ns = True
+        st.session_state.em_ew = False
+        msg = "🚨 EMERGENCY OVERRIDE ACTIVATED: North-South path set to GREEN."
+    elif dir_upper == "EW":
+        st.session_state.em_ew = True
+        st.session_state.em_ns = False
+        msg = "🚨 EMERGENCY OVERRIDE ACTIVATED: East-West path set to GREEN."
+    else:
+        st.session_state.em_ns = False
+        st.session_state.em_ew = False
+        msg = "✅ Emergency override cleared. Resuming normal FSM cycling."
+    
+    st.session_state.fsm_timer = 0
+    st.session_state.log_history.append(msg)
+    return msg
+
+@tool
+def get_hardware_status() -> str:
+    """Returns the current state, timer, and signal outputs of the Verilog Traffic Light Controller."""
+    status = (
+        f"FSM State: {STATE_NAMES[st.session_state.fsm_state]} | "
+        f"Timer: {st.session_state.fsm_timer}/10 | "
+        f"Emergency NS: {st.session_state.em_ns} | "
+        f"Emergency EW: {st.session_state.em_ew}"
+    )
+    return status
+
+tools = [trigger_clock_steps, trigger_emergency_override, get_hardware_status]
+
+# --- LANGGRAPH AGENT SETUP ---
+class AgentState(TypedDict):
+    messages: Annotated[list, add_messages]
+
+def build_agent_graph(llm):
+    llm_with_tools = llm.bind_tools(tools)
+
+    def agent_node(state: AgentState):
+        return {"messages": [llm_with_tools.invoke(state["messages"])]}
+
+    def tool_node(state: AgentState):
+        last_message = state["messages"][-1]
+        tool_outputs = []
+        for tool_call in last_message.tool_calls:
+            t_name = tool_call["name"]
+            t_args = tool_call["args"]
+            
+            if t_name == "trigger_clock_steps":
+                res = trigger_clock_steps.invoke(t_args)
+            elif t_name == "trigger_emergency_override":
+                res = trigger_emergency_override.invoke(t_args)
+            elif t_name == "get_hardware_status":
+                res = get_hardware_status.invoke(t_args)
+            else:
+                res = "Unknown tool."
+            
+            tool_outputs.append(ToolMessage(content=str(res), tool_call_id=tool_call["id"]))
+        return {"messages": tool_outputs}
+
+    def should_continue(state: AgentState):
+        last_message = state["messages"][-1]
+        if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+            return "tools"
+        return END
+
+    workflow = StateGraph(AgentState)
+    workflow.add_node("agent", agent_node)
+    workflow.add_node("tools", tool_node)
+    workflow.set_entry_point("agent")
+    workflow.add_conditional_edges("agent", should_continue, {"tools": "tools", END: END})
+    workflow.add_edge("tools", "agent")
+
+    return workflow.compile()
+
+# --- SIDEBAR & UI LAYOUT ---
+with st.sidebar:
+    st.header("⚙️ Agent Settings")
+    api_key = st.text_input("OpenAI API Key", type="password", value=os.getenv("OPENAI_API_KEY", ""))
+    if api_key:
+        os.environ["OPENAI_API_KEY"] = api_key
+
+col1, col2 = st.columns([1.2, 1])
 
 with col1:
-    st.subheader("1. Digital Input Controls")
-    input_val = st.slider("Select Hex/Decimal Value (0-15):", min_value=0, max_value=15, value=5)
-    
-    # 4-bit Binary formatting
-    binary_str = format(input_val, '04b')
-    st.info(f"**Binary MUX Select Line (`bcd`):** `4'b{binary_str}` | **Hex:** `4'h{input_val:X}`")
+    st.subheader("🤖 AI Command Center")
+    for msg in st.session_state.messages:
+        if isinstance(msg, HumanMessage):
+            st.chat_message("user").write(msg.content)
+        elif isinstance(msg, AIMessage) and msg.content:
+            st.chat_message("assistant").write(msg.content)
 
-    # MUX evaluation
-    seg_bits = segment_lut[input_val]
-    signals = {seg: int(bit) == 0 for seg, bit in zip(['a', 'b', 'c', 'd', 'e', 'f', 'g'], seg_bits)}
+    user_input = st.chat_input("e.g. 'An emergency vehicle is approaching from North-South. Override the light!'")
 
-    st.subheader("2. Simulated Signal Outputs")
-    st.json({f"Segment {k}": "HIGH (ON)" if v else "LOW (OFF)" for k, v in signals.items()})
+    if user_input:
+        if not os.getenv("OPENAI_API_KEY"):
+            st.error("Please provide an OpenAI API Key in the sidebar.")
+            st.stop()
+
+        st.session_state.messages.append(HumanMessage(content=user_input))
+        st.chat_message("user").write(user_input)
+
+        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.1)
+        graph = build_agent_graph(llm)
+
+        with st.chat_message("assistant"):
+            status_container = st.status("🧠 Agent Evaluating Hardware Command...", expanded=True)
+            inputs = {"messages": st.session_state.messages}
+            final_res = ""
+
+            for event in graph.stream(inputs, stream_mode="values"):
+                latest_msg = event["messages"][-1]
+                if hasattr(latest_msg, "tool_calls") and latest_msg.tool_calls:
+                    for tc in latest_msg.tool_calls:
+                        status_container.write(f"🔧 **Executing Hardware Action:** `{tc['name']}` ({tc['args']})")
+                elif isinstance(latest_msg, ToolMessage):
+                    status_container.write(f"📥 **Hardware Response:** `{latest_msg.content}`")
+                elif isinstance(latest_msg, AIMessage) and latest_msg.content:
+                    final_res = latest_msg.content
+
+            status_container.update(label="✅ Hardware State Updated", state="complete", expanded=False)
+            st.write(final_res)
+            st.session_state.messages.append(AIMessage(content=final_res))
+            st.rerun()
 
 with col2:
-    st.subheader("3. Rendered Hardware Display")
+    st.subheader("🚦 Verilog Hardware State Monitor")
     
-    # Render LED Segments using Matplotlib
-    fig, ax = plt.subplots(figsize=(4, 6))
-    ax.set_xlim(-0.5, 2.5)
-    ax.set_ylim(-0.5, 4.5)
-    ax.set_aspect('equal')
-    ax.axis('off')
-    fig.patch.set_facecolor('#0e1117')
+    # Render Current Light Signals
+    if st.session_state.em_ns:
+        ns_light, ew_light = "🟢 GREEN", "🔴 RED"
+    elif st.session_state.em_ew:
+        ns_light, ew_light = "🔴 RED", "🟢 GREEN"
+    else:
+        st_idx = st.session_state.fsm_state
+        ns_light = "🟢 GREEN" if st_idx == 0 else ("🟡 YELLOW" if st_idx == 1 else "🔴 RED")
+        ew_light = "🟢 GREEN" if st_idx == 2 else ("🟡 YELLOW" if st_idx == 3 else "🔴 RED")
 
-    color_on = "#00FF66"   # Bright Green LED
-    color_off = "#1e2530"  # Dark unlit segment
+    st.metric("North-South Light Output (`light_ns`)", ns_light)
+    st.metric("East-West Light Output (`light_ew`)", ew_light)
+    st.metric("FSM Current State (`state`)", STATE_NAMES[st.session_state.fsm_state])
+    st.metric("Internal Timer Counter (`timer`)", f"{st.session_state.fsm_timer} cycles")
 
-    # 7-Segment Polygon Geometry
-    segments = {
-        'a': [[0.2, 3.8], [1.8, 3.8], [1.6, 3.5], [0.4, 3.5]],
-        'b': [[1.85, 3.7], [1.85, 2.1], [1.55, 2.25], [1.55, 3.4]],
-        'c': [[1.85, 1.9], [1.85, 0.3], [1.55, 0.6], [1.55, 1.75]],
-        'd': [[0.2, 0.2], [1.8, 0.2], [1.6, 0.5], [0.4, 0.5]],
-        'e': [[0.15, 0.3], [0.15, 1.9], [0.45, 1.75], [0.45, 0.6]],
-        'f': [[0.15, 2.1], [0.15, 3.7], [0.45, 3.4], [0.45, 2.25]],
-        'g': [[0.2, 2.0], [1.8, 2.0], [1.6, 2.15], [0.4, 2.15], [0.4, 1.85], [1.6, 1.85]]
-    }
-
-    # Draw each active/inactive segment
-    for name, poly in segments.items():
-        is_lit = signals[name]
-        c = color_on if is_lit else color_off
-        polygon = patches.Polygon(poly, closed=True, facecolor=c, edgecolor='#0e1117', linewidth=2)
-        ax.add_patch(polygon)
-
-    st.pyplot(fig)
-
-st.markdown("---")
-st.subheader("4. Generated Verilog Module (`decoder.v`)")
-
-with st.expander("Click to view corresponding Verilog module"):
-    st.code("""
-module segment_decoder (
-    input  wire [3:0] bcd,   // 4-bit select line
-    output reg  [6:0] seg   // 7-segment output
-);
-    wire [6:0] pattern [0:15];
-
-    assign pattern[0]  = 7'b0000001; // 0
-    assign pattern[1]  = 7'b1001111; // 1
-    assign pattern[2]  = 7'b0010010; // 2
-    assign pattern[3]  = 7'b0000110; // 3
-    assign pattern[4]  = 7'b1001100; // 4
-    assign pattern[5]  = 7'b0100100; // 5
-    assign pattern[6]  = 7'b0100000; // 6
-    assign pattern[7]  = 7'b0001101; // 7
-    assign pattern[8]  = 7'b0000000; // 8
-    assign pattern[9]  = 7'b0000100; // 9
-    assign pattern[10] = 7'b0001000; // A
-    assign pattern[11] = 7'b1100000; // b
-    assign pattern[12] = 7'b0110001; // C
-    assign pattern[13] = 7'b1000010; // d
-    assign pattern[14] = 7'b0110000; // E
-    assign pattern[15] = 7'b0111000; // F
-
-    always @(*) begin
-        seg = pattern[bcd];
-    end
-endmodule
-""", language="verilog")
+    st.subheader("📋 Hardware Execution Log")
+    for log in reversed(st.session_state.log_history[-8:]):
+        st.write(f"- {log}")
