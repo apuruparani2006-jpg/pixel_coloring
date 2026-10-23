@@ -1,13 +1,10 @@
-from pathlib import Path
-from urllib.request import urlretrieve
-
+import os
+import gc
 import cv2
 import numpy as np
-from PIL import Image
+import requests
 
-MODEL_DIR = Path(__file__).parent / "models"
-MODEL_DIR.mkdir(exist_ok=True)
-
+MODELS_DIR = "models"
 FILES = {
     "prototxt": (
         "colorization_deploy_v2.prototxt",
@@ -23,75 +20,86 @@ FILES = {
     ),
 }
 
-def get_model_files():
-    paths = {}
+def download_file(filename, url):
+    os.makedirs(MODELS_DIR, exist_ok=True)
+    filepath = os.path.join(MODELS_DIR, filename)
+    
+    # Check if already downloaded
+    if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
+        return filepath
+        
+    print(f"Downloading {filename}...")
+    response = requests.get(url, stream=True, timeout=60)
+    response.raise_for_status()
+    
+    # Download in small 8KB chunks to avoid RAM spikes
+    with open(filepath, "wb") as f:
+        for chunk in response.iter_content(chunk_size=8192):
+            if chunk:
+                f.write(chunk)
+                
+    print(f"Downloaded {filename} successfully.")
+    return filepath
 
-    for name, (filename, url) in FILES.items():
-        path = MODEL_DIR / filename
+def colorize_image(image_bytes):
+    try:
+        # Step 1: Ensure files are downloaded
+        prototxt_path = download_file(*FILES["prototxt"])
+        weights_path = download_file(*FILES["weights"])
+        pts_path = download_file(*FILES["points"])
 
-        if not path.exists():
-            try:
-                urlretrieve(url, path)
-            except Exception as exc:
-                if path.exists():
-                    path.unlink()
-                raise RuntimeError(
-                    f"Could not download model file {filename}. "
-                    "Check your internet connection and try again."
-                ) from exc
+        # Step 2: Load Model
+        net = cv2.dnn.readNetFromCaffe(prototxt_path, weights_path)
+        pts = np.load(pts_path)
 
-        paths[name] = path
+        # Populate cluster centers
+        class8 = net.getLayerId("class8_ab")
+        conv8 = net.getLayerId("conv8_313_rh")
+        pts = pts.transpose().reshape(2, 313, 1, 1)
+        net.getLayer(class8).blobs = [pts.astype(np.float32)]
+        net.getLayer(conv8).blobs = [np.full((1, 313), 2.606, dtype="float32")]
 
-    return paths
+        # Step 3: Decode input image
+        np_arr = np.frombuffer(image_bytes, np.uint8)
+        img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+        
+        # Free memory immediately
+        del np_arr
+        gc.collect()
 
+        if img is None:
+            return None
 
-def load_model():
-    paths = get_model_files()
+        # Step 4: Downscale image for colorization to save RAM
+        height, width = img.shape[:2]
+        max_dim = 600  # Prevents RAM overflow on large images
+        if max(height, width) > max_dim:
+            scale = max_dim / float(max(height, width))
+            img = cv2.resize(img, (int(width * scale), int(height * scale)), interpolation=cv2.INTER_AREA)
 
-    net = cv2.dnn.readNetFromCaffe(
-        str(paths["prototxt"]),
-        str(paths["weights"]),
-    )
+        scaled = img.astype("float32") / 255.0
+        lab = cv2.cvtColor(scaled, cv2.COLOR_BGR2LAB)
 
-    cluster_centers = np.load(paths["points"])
-    cluster_centers = cluster_centers.transpose().reshape(2, 313, 1, 1)
+        resized = cv2.resize(lab, (224, 224))
+        L = cv2.split(resized)[0]
+        L -= 50
 
-    net.getLayer(net.getLayerId("class8_ab")).blobs = [
-        cluster_centers.astype(np.float32)
-    ]
+        net.setInput(cv2.dnn.blobFromImage(L))
+        ab = net.forward()[0, :, :, :].transpose((1, 2, 0))
 
-    net.getLayer(net.getLayerId("conv8_313_rh")).blobs = [
-        np.full((1, 313), 2.606, dtype=np.float32)
-    ]
+        ab = cv2.resize(ab, (img.shape[1], img.shape[0]))
+        L_orig = cv2.split(lab)[0]
+        colorized = np.concatenate((L_orig[:, :, np.newaxis], ab), axis=2)
 
-    return net
+        colorized = cv2.cvtColor(colorized, cv2.COLOR_LAB2BGR)
+        colorized = np.clip(colorized * 255, 0, 255).astype("uint8")
 
+        # Clean up heavy variables
+        del net, pts, lab, resized, L, ab
+        gc.collect()
 
-def colorize_image(image: Image.Image) -> Image.Image:
-    """Return an AI-colorized RGB PIL image."""
-    net = load_model()
+        return colorized
 
-    rgb = np.asarray(image.convert("RGB"))
-    height, width = rgb.shape[:2]
-
-    scaled = rgb.astype(np.float32) / 255.0
-    lab = cv2.cvtColor(scaled, cv2.COLOR_RGB2LAB)
-
-    l_channel = lab[:, :, 0]
-    l_resized = cv2.resize(l_channel, (224, 224))
-    l_resized -= 50
-
-    net.setInput(cv2.dnn.blobFromImage(l_resized))
-    ab = net.forward("class8_ab")[0].transpose(1, 2, 0)
-    ab = cv2.resize(ab, (width, height))
-
-    lab_out = np.concatenate(
-        [l_channel[:, :, None], ab],
-        axis=2,
-    )
-
-    rgb_out = cv2.cvtColor(lab_out, cv2.COLOR_LAB2RGB)
-    rgb_out = np.clip(rgb_out, 0, 1)
-    rgb_out = (rgb_out * 255).astype(np.uint8)
-
-    return Image.fromarray(rgb_out, mode="RGB")
+    except Exception as e:
+        print(f"Colorization Error: {e}")
+        return None
