@@ -1,6 +1,2 @@
 streamlit
-Pillow
-numpy
-opencv-python-headless==4.10.0.84
-openai
-requests
+matplotlib
